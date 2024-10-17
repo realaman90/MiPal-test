@@ -126,7 +126,7 @@ def scrape_url(url, max_retries=3, delay=5):
 if __name__ == "__main__":
     url = "https://cleantechnica.com/2023/12/02/evs-take-60-6-share-in-sweden/"
     result = scrape_url(url)
-    print(result)
+    # print(result)
     
     # Save the result as JSON
     output_dir = "scraped_data"
