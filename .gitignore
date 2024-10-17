@@ -1,0 +1,6 @@
+.env
+.cache
+__pycache__
+paper
+scraped_data
+web
