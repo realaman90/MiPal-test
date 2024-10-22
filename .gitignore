@@ -4,3 +4,4 @@ __pycache__
 paper
 scraped_data
 web
+.venv

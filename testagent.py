@@ -10,7 +10,7 @@ import logging
 import traceback
 from typing import Dict
 from urllib.parse import urlparse
-from utils import get_openai_api_key, get_serpapi_key, get_fc_api_key, print_all_env_variables
+from utils import get_openai_api_key, get_serpapi_key
 from openai import AsyncOpenAI
 from main import scrape_website, search_serpapi
 from scraping import scrape_url
@@ -20,12 +20,12 @@ from concurrent.futures import ThreadPoolExecutor
 # API Keys
 OPENAI_API_KEY = get_openai_api_key()
 SERPAPI_KEY = get_serpapi_key()
-FIRECRAWL_API_KEY = get_fc_api_key()
+
 
 print("API Keys:")
 print(f"OPENAI_API_KEY: {OPENAI_API_KEY}")
 print(f"SERPAPI_KEY: {SERPAPI_KEY}")
-print(f"FIRECRAWL_API_KEY: {FIRECRAWL_API_KEY}")
+
 
 # LLM config
 llm_config = {
