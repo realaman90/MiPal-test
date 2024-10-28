@@ -27,3 +27,4 @@ def print_all_env_variables():
 
 # Call this function to see all environment variables
 print_all_env_variables()
+

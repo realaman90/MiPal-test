@@ -4,16 +4,8 @@ input = {
     "result_structure": {
         
         "description": "string",
-        "revenue_data": {
-            "year": "string",
-            "value": "number",
-            "unit": "string"
-        },
-        "market_size": {
-            "year": "string",
-            "value": "number",
-            "unit": "string"
-        },
+        "revenue_data": "string",
+        "market_size": "string",
         "competition": {
             "companies": ["string"]
         },
