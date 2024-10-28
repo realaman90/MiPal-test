@@ -42,6 +42,7 @@ def main():
         .list(pageSize=100, fields="nextPageToken, files(id, name,kind)")
         .execute()
     )
+    
     items = results.get("files", [])
 
     if not items:
