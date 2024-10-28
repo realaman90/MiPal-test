@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV "/Users/amanrawat/Desktop/MiPal-test/.venv"
+set -gx VIRTUAL_ENV "/Users/amanrawat/Desktop/04-agents/autogen-mipal-examples/.venv"
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/bin" $PATH
