@@ -43,7 +43,7 @@ def main():
     # Call the Drive v3 API
     results = (
         service.files()
-        .list(pageSize=100, fields="nextPageToken, files(id, name,kind)")
+        .list(pageSize=100, fields="nextPageToken, files(id, name,kind, mimeType)")
         .execute()
     )
     #read a file from google drive
@@ -58,7 +58,7 @@ def main():
       return
     print("Files:")
     for item in items:
-      print(f"{item['name']} ({item['id'] }) ({item['kind']})")
+      print(f"{item['name']} ({item['id'] }) ({item['kind']}) ({item['mimeType']})")
   except HttpError as error:
     # TODO(developer) - Handle errors from drive API.
     print(f"An error occurred: {error}")

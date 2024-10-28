@@ -19,3 +19,6 @@ google-auth-oauthlib
 llama-index
 llama-index-readers-google
 ipython
+pypdf2
+llama-index-readers-smart-pdf-loader
+python-pptx
