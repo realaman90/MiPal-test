@@ -7,3 +7,4 @@ web
 .venv
 groupchat
 output
+token.json

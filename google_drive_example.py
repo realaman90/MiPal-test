@@ -37,23 +37,28 @@ def main():
     service = build("drive", "v3", credentials=creds)
 
     # Call the Drive v3 API
-    results = (
-        service.files()
-        .list(pageSize=100, fields="nextPageToken, files(id, name,kind)")
-        .execute()
-    )
+    # results = (
+    #     service.files()
+    #     .list(pageSize=100, fields="nextPageToken, files(id, name,kind)")
+    #     .execute()
+    # )
+    #read a file from google drive
+    file_id = "1HAi2IVnfTtf49-ObBxvLrfE7-6zU0XPIcMwR3msCR1g"
+    file = service.files().get(fileId=file_id).execute()
+    print(file)
     
-    items = results.get("files", [])
+    # items = results.get("files", [])
 
-    if not items:
-      print("No files found.")
-      return
-    print("Files:")
-    for item in items:
-      print(f"{item['name']} ({item['id'] }) ({item['kind']})")
+    # if not items:
+    #   print("No files found.")
+    #   return
+    # print("Files:")
+    # for item in items:
+    #   print(f"{item['name']} ({item['id'] }) ({item['kind']})")
   except HttpError as error:
     # TODO(developer) - Handle errors from drive API.
     print(f"An error occurred: {error}")
+
 
 
 if __name__ == "__main__":
