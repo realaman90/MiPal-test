@@ -472,12 +472,10 @@ class DriveDocumentSummarizer:
             elif file_type == 'presentation':
                 return self._summarize_presentation(file_id)
             elif file_type in ['pdf', 'word', 'excel', 'text']:
-                # Download and read content
                 content = self._download_and_read_file(file_id, mime_type)
                 if not content:
                     return "Unable to extract content from file"
                 
-                # Create document and index
                 document = Document(text=content)
                 index = SummaryIndex.from_documents([document])
                 query_engine = index.as_query_engine()

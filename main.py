@@ -14,6 +14,8 @@ from utils import get_openai_api_key, get_serpapi_key, get_fc_api_key, print_all
 from openai import AsyncOpenAI
 from scraping import scrape_url, save_json
 import os
+from fastapi import FastAPI
+from api.google_auth_routes import router as google_router
 
 # API Keys
 OPENAI_API_KEY = get_openai_api_key()
@@ -218,4 +220,6 @@ async def main():
 if __name__ == "__main__":
     print('*****************STARTING*****************')
     
+    app = FastAPI()
+    app.include_router(google_router)
     asyncio.run(main())
