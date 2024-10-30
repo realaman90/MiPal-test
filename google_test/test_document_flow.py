@@ -17,7 +17,7 @@ def main():
         # Initialize components
         user_store = UserStore()
         doc_store = DocumentGraphStore()
-        test_user_id = "aman"  # Use existing user ID
+        test_user_id = "dev"  # Use existing user ID
         
         # Get existing credentials
         print("\nFetching Google credentials...")

@@ -24,6 +24,8 @@ import docx2txt
 from openpyxl import load_workbook
 from pptx import Presentation
 from .drive_stats import DriveStats
+import base64
+import openai
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,7 +49,10 @@ class DriveDocumentSummarizer:
         'word': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'powerpoint': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        'text': 'text/plain'
+        'text': 'text/plain',
+        'csv': 'text/csv',  # Added CSV type
+        'image': 'image/jpeg',  # Added image types
+        'image_png': 'image/png'
     }
 
     def __init__(self, credentials_dict: Dict = None, config: Dict = None):
@@ -173,11 +178,8 @@ class DriveDocumentSummarizer:
             index = SummaryIndex.from_documents([document])
             query_engine = index.as_query_engine()
             
-            summary_prompt = """Please provide a comprehensive summary of this document. Include:
-            1. Main topics or themes
-            2. Key points or findings
-            3. Important details or conclusions
-            Please structure the summary in a clear, organized manner."""
+            summary_prompt = """Please provide the summary of this document, what is the purpose of the document? what is the main message? what are the key takeaways? """
+            
             
             response = query_engine.query(summary_prompt)
             return str(response)
@@ -533,6 +535,143 @@ class DriveDocumentSummarizer:
                 except Exception as e:
                     logger.error(f"Error cleaning up temporary file: {str(e)}")
 
+    def _summarize_image(self, file_id: str) -> str:
+        """Summarize an image using GPT-4 Vision"""
+        try:
+            # Download image to temporary file
+            request = self.drive_service.files().get_media(fileId=file_id)
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+            
+            downloader = MediaIoBaseDownload(temp_file, request)
+            done = False
+            while done is False:
+                _, done = downloader.next_chunk()
+            
+            temp_file.close()
+            
+            # Encode image to base64
+            with open(temp_file.name, "rb") as image_file:
+                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # Create GPT-4 Vision request
+            response = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Please provide a detailed description of this image. Include:\n"
+                                      "1. What is shown in the image\n"
+                                      "2. Key elements and their arrangement\n"
+                                      "3. Any text or important information visible\n"
+                                      "4. The overall context or purpose of the image"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{encoded_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
+            
+            # Extract and return the description
+            description = response.choices[0].message.content
+            return f"Image Description: {description}"
+            
+        except Exception as e:
+            logger.error(f"Error summarizing image {file_id}: {str(e)}")
+            return f"Error analyzing image: {str(e)}"
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+
+    def _summarize_csv(self, file_id: str) -> str:
+        """Download and summarize a CSV file"""
+        temp_file = None
+        try:
+            # Download file
+            request = self.drive_service.files().get_media(fileId=file_id)
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+            
+            downloader = MediaIoBaseDownload(temp_file, request)
+            done = False
+            while done is False:
+                _, done = downloader.next_chunk()
+            
+            temp_file.close()
+            
+            # Read CSV content using pandas
+            df = pd.read_csv(temp_file.name)
+            
+            # Generate summary statistics
+            summary_parts = [
+                f"CSV File Analysis:",
+                f"- Total rows: {len(df)}",
+                f"- Total columns: {len(df.columns)}",
+                f"- Column names: {', '.join(df.columns.tolist())}",
+                "\nColumn Statistics:"
+            ]
+            
+            # Analyze each column
+            for column in df.columns:
+                col_type = str(df[column].dtype)
+                unique_count = df[column].nunique()
+                null_count = df[column].isnull().sum()
+                
+                summary_parts.append(f"\n{column}:")
+                summary_parts.append(f"- Data type: {col_type}")
+                summary_parts.append(f"- Unique values: {unique_count}")
+                summary_parts.append(f"- Missing values: {null_count}")
+                
+                # For numeric columns, add basic statistics
+                if df[column].dtype in ['int64', 'float64']:
+                    summary_parts.append(f"- Mean: {df[column].mean():.2f}")
+                    summary_parts.append(f"- Min: {df[column].min()}")
+                    summary_parts.append(f"- Max: {df[column].max()}")
+                
+                # For text columns, show sample values
+                elif df[column].dtype == 'object':
+                    sample_values = df[column].dropna().sample(min(3, unique_count)).tolist()
+                    summary_parts.append(f"- Sample values: {', '.join(str(x) for x in sample_values)}")
+            
+            # Add data patterns or insights
+            if len(df) > 0:
+                summary_parts.append("\nData Insights:")
+                
+                # Check for completeness
+                completeness = (1 - df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100
+                summary_parts.append(f"- Data completeness: {completeness:.1f}%")
+                
+                # Check for duplicate rows
+                duplicates = df.duplicated().sum()
+                if duplicates > 0:
+                    summary_parts.append(f"- Found {duplicates} duplicate rows")
+                
+                # Add sample of first few rows
+                summary_parts.append("\nFirst few rows preview:")
+                summary_parts.append(df.head(3).to_string())
+            
+            return "\n".join(summary_parts)
+            
+        except pd.errors.EmptyDataError:
+            return "The CSV file is empty"
+        except pd.errors.ParserError:
+            return "Unable to parse the CSV file - it may be malformed"
+        except Exception as e:
+            logger.error(f"Error summarizing CSV {file_id}: {str(e)}")
+            return f"Error summarizing CSV file: {str(e)}"
+        finally:
+            if temp_file and os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+
     def _summarize_file(self, file_id: str, file_type: str, mime_type: str) -> str:
         """Summarize any type of file"""
         try:
@@ -540,12 +679,16 @@ class DriveDocumentSummarizer:
             error_msg = None
             
             try:
-                if file_type == 'document':
+                if mime_type in ['image/jpeg', 'image/png']:
+                    summary = self._summarize_image(file_id)
+                elif file_type == 'document':
                     summary = self._summarize_document(file_id)
                 elif file_type == 'spreadsheet':
                     summary = self._summarize_spreadsheet(file_id)
                 elif file_type == 'presentation':
                     summary = self._summarize_presentation(file_id)
+                elif file_type == 'csv':  # Add CSV handling
+                    summary = self._summarize_csv(file_id)
                 elif file_type in ['pdf', 'word', 'excel', 'text']:
                     content = self._download_and_read_file(file_id, mime_type)
                     if not content:

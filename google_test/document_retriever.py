@@ -329,7 +329,7 @@ def main():
     """Test document retrieval functionality"""
     try:
         retriever = DocumentRetriever()
-        test_user_id = "aman"
+        test_user_id = "dev"
         
         # Debug embeddings
         print("\nDebugging embeddings...")
@@ -337,22 +337,13 @@ def main():
         
         # Test semantic search with different queries
         queries = [
+           
             {
-                'text': "Share Farm proposals and presentations",
-                'threshold': 0.3
+                'text': "Fastlane Devs logo image",
+                'threshold': 0.9
+
             },
-            {
-                'text': "machine learning and AI documents",
-                'threshold': 0.25
-            },
-            {
-                'text': "invoice and payment related files",
-                'threshold': 0.3
-            },
-            {
-                'text': "employment agreements and contracts",
-                'threshold': 0.35
-            }
+            
         ]
         
         for query_info in queries:

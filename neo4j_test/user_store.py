@@ -371,9 +371,9 @@ def main():
         user_store = UserStore()
         
         test_user = {
-            'user_id': 'aman',
-            'email': 'aman@fastlane.ai',
-            'first_name': 'Aman',
+            'user_id': 'dev',
+            'email': 'dev@fastlane.com',
+            'first_name': 'Dev',
             'last_name': 'Kumar',
             'company': {
                 'name': 'Fastlane',
@@ -395,13 +395,13 @@ def main():
             raise FileNotFoundError(f"credentials.json not found at {client_secrets_file}")
             
         integration_result = user_store.setup_google_integration(
-            'aman',  # Use same user_id as created user
+            'dev',  # Use same user_id as created user
             client_secrets_file
         )
         print(f"Integration result: {json.dumps(integration_result, indent=2)}")
         
         print("\nTesting credentials retrieval...")
-        credentials = user_store.get_google_credentials('aman')  # Use same user_id
+        credentials = user_store.get_google_credentials('dev')  # Use same user_id
         if credentials:
             print("Successfully retrieved and validated credentials")
             drive_service = build('drive', 'v3', credentials=credentials)
