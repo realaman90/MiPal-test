@@ -4,9 +4,10 @@ import logging
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+from llama_index.core import Document, VectorStoreIndex, StorageContext
 from llama_index.vector_stores.neo4jvector import Neo4jVectorStore
-from llama_index.core import VectorStoreIndex, Document, StorageContext
 import openai
+from llama_index.embeddings.openai import OpenAIEmbedding
 
 load_dotenv()
 
@@ -21,26 +22,32 @@ class DocumentEmbeddingStore:
         self.user = os.getenv("NEO4J_USER", "neo4j")
         self.password = os.getenv("NEO4J_PASSWORD")
         
-        # OpenAI credentials
+        # Initialize OpenAI
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         if not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         openai.api_key = self.openai_api_key
         
-        # Initialize Neo4j vector store
+        # Initialize Neo4j connections
+        if not self.password:
+            raise ValueError("NEO4J_PASSWORD environment variable is required")
+        
+        self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+        
+        # Initialize vector store for embeddings
         self.embed_dim = 1536  # OpenAI embedding dimension
         self.vector_store = Neo4jVectorStore(
             username=self.user,
             password=self.password,
             url=self.uri,
             embed_dim=self.embed_dim,
-            index_name="document_summaries",  # Custom index name
-            text_node_property="summary",     # Property containing the text
-            hybrid_search=True               # Enable hybrid search
+            index_name="document_summaries",
+            text_node_property="summary",
+            hybrid_search=True
         )
         
-        # Initialize regular Neo4j connection
-        self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+        # Initialize embedding model
+        self.embed_model = OpenAIEmbedding()
 
     def close(self):
         """Close connections"""

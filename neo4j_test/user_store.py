@@ -373,7 +373,8 @@ def main():
         test_user = {
             'user_id': 'aman',
             'email': 'aman@fastlane.ai',
-            'name': 'Aman',
+            'first_name': 'Aman',
+            'last_name': 'Kumar',
             'company': {
                 'name': 'Fastlane',
                 'industry': 'Technology',

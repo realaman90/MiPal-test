@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Test the complete document flow"""
+    user_store = None
+    doc_store = None
+    
     try:
         # Initialize components
         user_store = UserStore()
@@ -39,8 +42,8 @@ def main():
             credentials_dict=credentials_dict,
             config={
                 'test_mode': True,
-                'test_file_limit': 10,
-                'max_files_per_type': 10,
+                'test_file_limit': 4,
+                'max_files_per_type': 3,
                 'max_total_files': 80
             }
         )
@@ -77,8 +80,10 @@ def main():
         raise
     
     finally:
-        user_store.close()
-        doc_store.close()
+        if user_store:
+            user_store.close()
+        if doc_store:
+            doc_store.close()
 
 if __name__ == "__main__":
     main() 

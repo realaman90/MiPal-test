@@ -47,44 +47,44 @@ class DocumentCleaner:
 
     def _delete_user_documents(self, tx, user_id: str):
         """Delete all documents owned by user and cleanup orphaned users"""
-        query = """
-        // First collect all documents owned by the user
-        MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)
-        WITH collect(d) as docs
+        # First delete document embeddings
+        embeddings_query = """
+        MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)-[r:HAS_EMBEDDING]->(e:DocumentEmbedding)
+        DELETE r, e
+        """
+        tx.run(embeddings_query, user_id=user_id)
         
-        // For each document, find its relationships and orphaned users
-        UNWIND docs as d
-        
-        // Find creator relationships
+        # Then delete document relationships and documents
+        docs_query = """
+        MATCH (u:User {user_id: $user_id})-[owns:OWNS]->(d:Document)
         OPTIONAL MATCH (d)<-[cr:CREATED]-(creator:User)
         WHERE creator.user_id IS NULL
-        
-        // Find modifier relationships
         OPTIONAL MATCH (d)<-[mr:LAST_MODIFIED]-(modifier:User)
         WHERE modifier.user_id IS NULL
-        
-        // Delete relationships and document
-        DELETE cr, mr, d
-        
-        // Collect orphaned users for deletion
-        WITH DISTINCT creator, modifier
-        WHERE creator IS NOT NULL OR modifier IS NOT NULL
-        
-        // Delete orphaned creators
-        WITH creator, modifier
-        WHERE creator IS NOT NULL AND creator.user_id IS NULL
-        AND NOT EXISTS((creator)-[:CREATED]->(:Document))
-        AND NOT EXISTS((creator)-[:LAST_MODIFIED]->(:Document))
-        DELETE creator
-        
-        // Delete orphaned modifiers
-        WITH modifier
-        WHERE modifier IS NOT NULL AND modifier.user_id IS NULL
-        AND NOT EXISTS((modifier)-[:CREATED]->(:Document))
-        AND NOT EXISTS((modifier)-[:LAST_MODIFIED]->(:Document))
-        DELETE modifier
+        WITH DISTINCT d, owns, cr, mr, creator, modifier
+        DELETE owns, cr, mr, d
+        RETURN 
+            COLLECT(DISTINCT creator.email) as creator_emails,
+            COLLECT(DISTINCT modifier.email) as modifier_emails
         """
-        tx.run(query, user_id=user_id)
+        result = tx.run(docs_query, user_id=user_id)
+        record = result.single()
+        
+        if record:
+            # Delete orphaned users by email
+            orphaned_query = """
+            UNWIND $creator_emails + $modifier_emails as email
+            MATCH (u:User {email: email})
+            WHERE u.user_id IS NULL
+            AND NOT EXISTS((u)-[:CREATED]->(:Document))
+            AND NOT EXISTS((u)-[:LAST_MODIFIED]->(:Document))
+            DELETE u
+            """
+            tx.run(
+                orphaned_query, 
+                creator_emails=record['creator_emails'], 
+                modifier_emails=record['modifier_emails']
+            )
 
     def delete_documents(self, user_id: str, confirm: bool = True) -> dict:
         """
