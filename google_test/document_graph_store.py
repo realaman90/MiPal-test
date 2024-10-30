@@ -189,6 +189,49 @@ class DocumentGraphStore:
             logger.error(f"Error retrieving document history: {e}")
             return None
 
+    def _store_documents(self, tx, user_id: str, documents: Dict[str, List[Dict]]):
+        """Store documents and their summaries in Neo4j"""
+        query = """
+        MATCH (u:User {user_id: $user_id})
+        WITH u
+        UNWIND $documents as doc
+        MERGE (d:Document {id: doc.id})
+        SET 
+            d.name = doc.name,
+            d.mime_type = doc.mime_type,
+            d.summary = doc.summary,
+            d.created_time = doc.created_time,
+            d.modified_time = doc.modified_time,
+            d.owner_email = doc.owner_email,
+            d.size = doc.size,
+            d.summary_status = doc.summary_status
+        MERGE (u)-[r:OWNS]->(d)
+        RETURN d
+        """
+        
+        # Prepare documents for storage
+        flat_documents = []
+        for doc_type, docs in documents.items():
+            for doc in docs:
+                flat_documents.append({
+                    'id': doc['id'],  # Use the existing ID from Google Drive
+                    'name': doc['name'],
+                    'mime_type': doc['mime_type'],
+                    'summary': doc.get('summary', ''),
+                    'created_time': doc.get('created_time', ''),
+                    'modified_time': doc.get('modified_time', ''),
+                    'owner_email': doc.get('owner_email', ''),
+                    'size': doc.get('size', 0),
+                    'summary_status': doc.get('summary_status', 'UNKNOWN')
+                })
+        
+        result = tx.run(
+            query,
+            user_id=user_id,
+            documents=flat_documents
+        )
+        return result
+
 def main():
     """Example usage of DocumentGraphStore"""
     try:

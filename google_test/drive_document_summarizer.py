@@ -99,35 +99,45 @@ class DriveDocumentSummarizer:
             files_by_type = {mime_type: [] for mime_type in self.MIME_TYPES.keys()}
             
             # Determine limits based on configuration and stats
-            file_limit = (
+            total_file_limit = (
                 self.config['test_file_limit'] if self.config['test_mode']
-                else min(self.config['max_files_per_type'], drive_stats['active_files'])
+                else min(self.config['max_total_files'], drive_stats['active_files'])
             )
             
-            # Process each MIME type separately to ensure we get enough files of each type
+            # Calculate per-type limit to respect total limit
+            files_per_type = max(1, total_file_limit // len(self.MIME_TYPES))
+            total_files_found = 0
+            
+            # Process each MIME type separately
             for doc_type, mime_type in self.MIME_TYPES.items():
+                if total_files_found >= total_file_limit:
+                    break
+                    
+                remaining_limit = min(
+                    files_per_type,
+                    total_file_limit - total_files_found
+                )
+                
                 query = f"mimeType='{mime_type}' and trashed=false"
                 
                 try:
                     results = self.drive_service.files().list(
-                        pageSize=file_limit,  # Increased from 10 to file_limit
+                        pageSize=remaining_limit,
                         fields="nextPageToken, files(id, name, mimeType)",
                         q=query,
                         orderBy="modifiedTime desc"
                     ).execute()
                     
-                    items = results.get('files', [])
+                    items = results.get('files', [])[:remaining_limit]
+                    files_by_type[doc_type].extend([{
+                        'id': file['id'],
+                        'name': file['name'],
+                        'mimeType': file['mimeType']
+                    } for file in items])
                     
-                    if items:
-                        # Take up to file_limit files of this type
-                        for file in items[:file_limit]:
-                            files_by_type[doc_type].append({
-                                'id': file['id'],
-                                'name': file['name'],
-                                'mimeType': file['mimeType']
-                            })
-                            logger.info(f"Found {doc_type}: {file['name']}")
-                
+                    total_files_found += len(items)
+                    logger.info(f"Found {len(items)} {doc_type} files")
+                    
                 except Exception as e:
                     logger.error(f"Error listing files of type {doc_type}: {e}")
                     continue

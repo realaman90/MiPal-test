@@ -1,4 +1,4 @@
-#!/Users/amanrawat/Desktop/04-agents/autogen-mipal-examples/.venv/bin/python3.12
+#!/Users/aishwarya/MiPal-test/.venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

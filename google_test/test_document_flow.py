@@ -1,9 +1,12 @@
 import logging
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from neo4j_test.user_store import UserStore
 from google_test.drive_document_summarizer import DriveDocumentSummarizer
 from google_test.document_graph_store import DocumentGraphStore
 import json
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,7 +17,21 @@ def main():
         # Initialize components
         user_store = UserStore()
         doc_store = DocumentGraphStore()
-        test_user_id = "aman"  # Use existing user ID
+        test_user_id = "aishwarya"  # Changed from "aman" to "aishwarya"
+        
+        # Debug: Check if user exists
+        with user_store.driver.session() as session:
+            result = session.run(
+                "MATCH (u:User {user_id: $user_id}) RETURN u.integrations, u.email, u.name",
+                user_id=test_user_id
+            ).single()
+            if result:
+                print("User found:")
+                print(f"Name: {result['u.name']}")
+                print(f"Email: {result['u.email']}")
+                print(f"Integrations: {result['u.integrations']}")
+            else:
+                print("User not found in database")
         
         # Get existing credentials
         print("\nFetching Google credentials...")
