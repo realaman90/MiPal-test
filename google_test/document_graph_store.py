@@ -52,18 +52,29 @@ class DocumentGraphStore:
         query = """
         MERGE (u:User {user_id: $user_id})
         CREATE (d:Document {
+            id: apoc.create.uuid(),  // Generate unique ID
             origin_source_id: $origin_id,
             mime_type: $mime_type,
             origin_source: $origin_source,
-            name: $name,
-            summary: $summary,
+            title: $title,
+            doc_type: $doc_type,
+            summary: CASE 
+                WHEN $summary IS NULL OR $summary = '' 
+                THEN 'Summary generation failed or not supported for this document type' 
+                ELSE $summary 
+            END,
             created_time: $created_time,
             modified_time: $modified_time,
             owner_email: $owner_email,
             last_modifier_email: $last_modifier_email,
             size: $size,
             web_view_link: $web_view_link,
-            indexed_at: $indexed_at
+            indexed_at: $indexed_at,
+            summary_status: CASE 
+                WHEN $summary IS NULL OR $summary = '' 
+                THEN 'FAILED' 
+                ELSE 'SUCCESS' 
+            END
         })
         CREATE (u)-[:OWNS]->(d)
         WITH d
@@ -75,13 +86,21 @@ class DocumentGraphStore:
         RETURN d
         """
         
+        # Get document type from MIME type
+        doc_type = next(
+            (dt for dt, mt in DriveDocumentSummarizer.MIME_TYPES.items() 
+             if mt == doc_data['mime_type']),
+            'unknown'
+        )
+        
         result = tx.run(query, 
                        user_id=user_id,
                        origin_id=doc_data['id'],
                        mime_type=doc_data['mime_type'],
+                       doc_type=doc_type,
                        origin_source='google_drive',
-                       name=doc_data['name'],
-                       summary=doc_data['summary'],
+                       title=doc_data['name'],
+                       summary=doc_data.get('summary', ''),
                        created_time=doc_data['metadata'].get('created_time'),
                        modified_time=doc_data['metadata'].get('modified_time'),
                        owner_email=doc_data['metadata'].get('owner_email'),
@@ -94,8 +113,8 @@ class DocumentGraphStore:
     def store_user_documents(self, user_id: str, summarizer: DriveDocumentSummarizer):
         """Store all documents for a user in Neo4j"""
         try:
-            # Get summaries from DriveDocumentSummarizer
-            summaries = summarizer.summarize_all_files()
+            # Get summaries from DriveDocumentSummarizer with user_id
+            summaries = summarizer.summarize_all_files(user_id)  # Pass user_id here
             
             with self.driver.session() as session:
                 for doc_type, documents in summaries.items():
@@ -136,6 +155,8 @@ class DocumentGraphStore:
                 documents = []
                 for record in result:
                     doc = dict(record["d"])
+                    if 'name' not in doc and 'title' in doc:
+                        doc['name'] = doc['title']
                     doc['creator_email'] = record["creator_email"]
                     doc['modifier_email'] = record["modifier_email"]
                     documents.append(doc)
@@ -185,7 +206,7 @@ def main():
             # Retrieve and print the stored documents
             documents = doc_store.get_user_documents(test_user_id)
             for doc in documents:
-                print(f"\nDocument: {doc['name']}")
+                print(f"\nDocument Title: {doc['title']}")
                 print(f"Created: {doc['created_time']}")
                 print(f"Modified: {doc['modified_time']}")
                 print(f"Owner: {doc['owner_email']}")

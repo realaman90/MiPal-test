@@ -24,4 +24,5 @@ llama-index-readers-smart-pdf-loader
 python-pptx
 neo4j-driver>=4.4.0
 fastapi
+llama-index-vector-stores-neo4jvector
 

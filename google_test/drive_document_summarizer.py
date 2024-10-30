@@ -5,7 +5,7 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from llama_index.core import Document, SummaryIndex, Settings
-from llama_index.readers.file import PDFReader  # Changed from llama_index.core.readers
+from llama_index.readers.file import PDFReader
 from llama_index.readers.google import GoogleDocsReader
 import json
 import pandas as pd
@@ -13,6 +13,8 @@ import io
 from googleapiclient.http import MediaIoBaseDownload
 import tempfile
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from neo4j_test.user_store import UserStore
 from pathlib import Path
 from dotenv import load_dotenv
 from llama_index.readers.smart_pdf_loader import SmartPDFLoader
@@ -21,20 +23,25 @@ from docx import Document as DocxDocument
 import docx2txt
 from openpyxl import load_workbook
 from pptx import Presentation
+from .drive_stats import DriveStats
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Use API key from environment variable
-
-
 class DriveDocumentSummarizer:
-    # Update MIME_TYPES to use Google's native MIME types
+    # Default configuration
+    DEFAULT_CONFIG = {
+        'max_files_per_type': 20,  # Maximum files to process per type
+        'max_total_files': 50,     # Maximum total files to process
+        'test_mode': False,        # Test mode flag
+        'test_file_limit': 10       # Number of files to process in test mode
+    }
+    
     MIME_TYPES = {
-        'document': 'application/vnd.google-apps.document', 
-        'spreadsheet': 'application/vnd.google-apps.spreadsheet',  
+        'document': 'application/vnd.google-apps.document',
+        'spreadsheet': 'application/vnd.google-apps.spreadsheet',
         'pdf': 'application/pdf',
         'presentation': 'application/vnd.google-apps.presentation',
         'word': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -43,12 +50,12 @@ class DriveDocumentSummarizer:
         'text': 'text/plain'
     }
 
-    def __init__(self, credentials_dict: Dict = None):
-        """Initialize with Google credentials"""
-        if credentials_dict is None:
-            credentials_dict = self._get_credentials_from_db()
+    def __init__(self, credentials_dict: Dict = None, config: Dict = None):
+        """Initialize with Google credentials and optional configuration"""
+        # Merge provided config with defaults
+        self.config = {**self.DEFAULT_CONFIG, **(config or {})}
         
-        # Update scopes to match exactly with google_doc.py
+        # Initialize credentials
         self.credentials = Credentials.from_authorized_user_info(
             credentials_dict,
             scopes=[
@@ -58,70 +65,81 @@ class DriveDocumentSummarizer:
                 "https://www.googleapis.com/auth/spreadsheets.readonly"
             ]
         )
-        
-        if self.credentials.expired:
-            self.credentials.refresh(Request())
-            self._update_credentials_in_db(self.credentials.to_json())
 
+        # Initialize services
         self.drive_service = build('drive', 'v3', credentials=self.credentials)
         self.docs_service = build('docs', 'v1', credentials=self.credentials)
         self.sheets_service = build('sheets', 'v4', credentials=self.credentials)
         self.docs_reader = GoogleDocsReader(credentials=self.credentials)
+        
+        # Initialize DriveStats
+        self.drive_stats = DriveStats()
 
-    def _get_credentials_from_db(self) -> Dict:
-        """Get credentials from database (mock implementation)"""
-        with open("token.json", "r") as f:
-            return json.load(f)
-
-    def _update_credentials_in_db(self, credentials_json: str):
-        """Update credentials in database (mock implementation)"""
-        with open("token.json", "w") as f:
-            f.write(credentials_json)
-
-    def list_files(self) -> Dict[str, List[Dict]]:
-        """List first 10 files of each type in Google Drive"""
+    def check_drive_stats(self, user_id: str) -> Dict:
+        """Get Drive statistics before processing"""
         try:
+            stats = self.drive_stats.get_file_count(user_id)
+            logger.info(f"Drive Statistics for user {user_id}:")
+            logger.info(f"Total Files: {stats['total_files']}")
+            logger.info(f"Active Files: {stats['active_files']}")
+            logger.info(f"Storage Used: {stats['total_size_human']}")
+            return stats
+        except Exception as e:
+            logger.error(f"Error getting drive stats: {e}")
+            return {}
+
+    def list_files(self, user_id: str) -> Dict[str, List[Dict]]:
+        """List files of each type in Google Drive with configured limits"""
+        try:
+            # First get drive statistics
+            drive_stats = self.check_drive_stats(user_id)
+            if not drive_stats:
+                raise ValueError("Could not get drive statistics")
+
             files_by_type = {mime_type: [] for mime_type in self.MIME_TYPES.keys()}
             
-            # Create query for Google's native types
-            query_parts = []
+            # Determine limits based on configuration and stats
+            file_limit = (
+                self.config['test_file_limit'] if self.config['test_mode']
+                else min(self.config['max_files_per_type'], drive_stats['active_files'])
+            )
+            
+            # Process each MIME type separately to ensure we get enough files of each type
             for doc_type, mime_type in self.MIME_TYPES.items():
-                query_parts.append(f"mimeType='{mime_type}'")
-            query = " or ".join(query_parts)
-            
-            logger.info("Querying Google Drive...")
-            results = self.drive_service.files().list(
-                pageSize=20,  # Keep this higher to get enough files to filter
-                fields="nextPageToken, files(id, name, mimeType)",
-                q=query,
-                orderBy="modifiedTime desc"  # Get most recently modified files first
-            ).execute()
-            
-            items = results.get('files', [])
-            
-            if not items:
-                logger.warning("No files found.")
-                return files_by_type
-            
-            # Categorize files by type, limiting to 10 per type change this later as per cron job --- to be discussed with Maheedhar
-            for file in items:
-                for doc_type, mime_type in self.MIME_TYPES.items():
-                    if file['mimeType'] == mime_type:
-                        # Only add if we haven't reached 10 files for this type
-                        if len(files_by_type[doc_type]) < 10:
+                query = f"mimeType='{mime_type}' and trashed=false"
+                
+                try:
+                    results = self.drive_service.files().list(
+                        pageSize=file_limit,  # Increased from 10 to file_limit
+                        fields="nextPageToken, files(id, name, mimeType)",
+                        q=query,
+                        orderBy="modifiedTime desc"
+                    ).execute()
+                    
+                    items = results.get('files', [])
+                    
+                    if items:
+                        # Take up to file_limit files of this type
+                        for file in items[:file_limit]:
                             files_by_type[doc_type].append({
                                 'id': file['id'],
                                 'name': file['name'],
                                 'mimeType': file['mimeType']
                             })
                             logger.info(f"Found {doc_type}: {file['name']}")
-                        break  # Stop checking other mime types once we've found a match
+                
+                except Exception as e:
+                    logger.error(f"Error listing files of type {doc_type}: {e}")
+                    continue
             
-            # Log summary of files found
+            # Log summary
+            total_files = 0
             for doc_type, files in files_by_type.items():
                 if files:
                     logger.info(f"Found {len(files)} {doc_type} files")
+                    total_files += len(files)
             
+            logger.info(f"Total files to process: {total_files}")
             return files_by_type
 
         except Exception as e:
@@ -132,16 +150,27 @@ class DriveDocumentSummarizer:
         """Summarize a Google Doc"""
         try:
             logger.info(f"Attempting to read Google Doc: {doc_id}")
-            documents = self.docs_reader.load_data(document_ids=[doc_id])
             
-            if not documents:
+            # Get document content using Google Docs API
+            doc = self.docs_service.documents().get(documentId=doc_id).execute()
+            content = ""
+            
+            # Extract text from document
+            for element in doc.get('body', {}).get('content', []):
+                if 'paragraph' in element:
+                    for para_element in element['paragraph']['elements']:
+                        if 'textRun' in para_element:
+                            content += para_element['textRun'].get('content', '')
+            
+            if not content.strip():
                 logger.warning(f"No content found in Google Doc: {doc_id}")
                 return "Unable to extract content from Google Doc"
             
-            logger.info(f"Successfully loaded Google Doc. Content length: {len(documents[0].text)}")
+            logger.info(f"Successfully loaded Google Doc. Content length: {len(content)}")
             
-            # Create index and generate summary
-            index = SummaryIndex.from_documents(documents)
+            # Create document and index
+            document = Document(text=content)
+            index = SummaryIndex.from_documents([document])
             query_engine = index.as_query_engine()
             
             summary_prompt = """Please provide a comprehensive summary of this document. Include:
@@ -167,25 +196,58 @@ class DriveDocumentSummarizer:
                 spreadsheetId=sheet_id
             ).execute()
             
+            # Get file metadata to check size
+            file_metadata = self.drive_service.files().get(
+                fileId=sheet_id,
+                fields='size'
+            ).execute()
+            
+            file_size = int(file_metadata.get('size', '0'))
+            size_limit = 14000  # Size threshold in bytes
+            
             sheets_data = []
             
-            # Process each sheet
-            for sheet in spreadsheet.get('sheets', []):
-                sheet_title = sheet['properties']['title']
-                range_name = f"'{sheet_title}'"
-                
-                # Get sheet data
-                result = self.sheets_service.spreadsheets().values().get(
-                    spreadsheetId=sheet_id,
-                    range=range_name
-                ).execute()
-                
-                rows = result.get('values', [])
-                if rows:
-                    sheet_content = [f"\nSheet: {sheet_title}"]
-                    for row in rows:
-                        sheet_content.append('\t'.join(str(cell) for cell in row))
-                    sheets_data.append('\n'.join(sheet_content))
+            # Process sheets based on size
+            if file_size > size_limit:
+                logger.info(f"Large spreadsheet detected ({file_size} bytes). Processing only first sheet.")
+                # Get only the first sheet
+                if spreadsheet.get('sheets'):
+                    first_sheet = spreadsheet['sheets'][0]
+                    sheet_title = first_sheet['properties']['title']
+                    range_name = f"'{sheet_title}'"
+                    
+                    # Get sheet data
+                    result = self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=sheet_id,
+                        range=range_name
+                    ).execute()
+                    
+                    rows = result.get('values', [])
+                    if rows:
+                        sheet_content = [f"\nFirst Sheet: {sheet_title} (Note: Only showing first sheet due to large file size)"]
+                        # Take only first 100 rows if there are more
+                        rows = rows[:100]
+                        for row in rows:
+                            sheet_content.append('\t'.join(str(cell) for cell in row))
+                        sheets_data.append('\n'.join(sheet_content))
+            else:
+                # Process all sheets for smaller files
+                for sheet in spreadsheet.get('sheets', []):
+                    sheet_title = sheet['properties']['title']
+                    range_name = f"'{sheet_title}'"
+                    
+                    # Get sheet data
+                    result = self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=sheet_id,
+                        range=range_name
+                    ).execute()
+                    
+                    rows = result.get('values', [])
+                    if rows:
+                        sheet_content = [f"\nSheet: {sheet_title}"]
+                        for row in rows:
+                            sheet_content.append('\t'.join(str(cell) for cell in row))
+                        sheets_data.append('\n'.join(sheet_content))
             
             if not sheets_data:
                 logger.warning(f"No content found in spreadsheet: {sheet_id}")
@@ -199,11 +261,20 @@ class DriveDocumentSummarizer:
             index = SummaryIndex.from_documents([document])
             query_engine = index.as_query_engine()
             
-            summary_prompt = """Please analyze this spreadsheet data and provide:
-            1. Overview of the data structure
-            2. Key patterns or trends
-            3. Important insights or findings
-            Please structure the summary in a clear, organized manner."""
+            # Adjust summary prompt based on whether it's a full or partial summary
+            if file_size > size_limit:
+                summary_prompt = """Please analyze this spreadsheet data (first sheet only) and provide:
+                1. Overview of the data structure in the first sheet
+                2. Key patterns or trends visible in the available data
+                3. Important insights from the first sheet
+                Note: This is a partial analysis as only the first sheet was processed due to file size.
+                Please structure the summary in a clear, organized manner."""
+            else:
+                summary_prompt = """Please analyze this spreadsheet data and provide:
+                1. Overview of the data structure
+                2. Key patterns or trends
+                3. Important insights or findings
+                Please structure the summary in a clear, organized manner."""
             
             response = query_engine.query(summary_prompt)
             return str(response)
@@ -465,67 +536,169 @@ class DriveDocumentSummarizer:
     def _summarize_file(self, file_id: str, file_type: str, mime_type: str) -> str:
         """Summarize any type of file"""
         try:
-            if file_type == 'document':
-                return self._summarize_document(file_id)
-            elif file_type == 'spreadsheet':
-                return self._summarize_spreadsheet(file_id)
-            elif file_type == 'presentation':
-                return self._summarize_presentation(file_id)
-            elif file_type in ['pdf', 'word', 'excel', 'text']:
-                content = self._download_and_read_file(file_id, mime_type)
-                if not content:
-                    return "Unable to extract content from file"
+            summary = ""
+            error_msg = None
+            
+            try:
+                if file_type == 'document':
+                    summary = self._summarize_document(file_id)
+                elif file_type == 'spreadsheet':
+                    summary = self._summarize_spreadsheet(file_id)
+                elif file_type == 'presentation':
+                    summary = self._summarize_presentation(file_id)
+                elif file_type in ['pdf', 'word', 'excel', 'text']:
+                    content = self._download_and_read_file(file_id, mime_type)
+                    if not content:
+                        error_msg = "Unable to extract content from file"
+                    else:
+                        document = Document(text=content)
+                        index = SummaryIndex.from_documents([document])
+                        query_engine = index.as_query_engine()
+                        
+                        summary_prompt = f"""Please provide a comprehensive summary of this {file_type} file. Include:
+                        1. Main purpose or topic of the document
+                        2. Key points or findings
+                        3. Important details or conclusions
+                        4. Any significant data or metrics mentioned
+                        
+                        If the content appears to be unstructured or unclear, focus on identifying:
+                        - The type of information present
+                        - Any patterns or recurring themes
+                        - The general context or domain
+                        
+                        Please structure the summary in a clear, organized manner."""
+                        
+                        response = query_engine.query(summary_prompt)
+                        summary = str(response)
+                else:
+                    error_msg = f"File type {file_type} not supported for summarization"
+                    
+            except Exception as e:
+                error_msg = f"Error during summarization: {str(e)}"
+                logger.error(f"Error summarizing file {file_id}: {e}")
+            
+            # If summary is empty or too short, provide a status message
+            if not summary or len(summary.strip()) < 50:
+                if error_msg:
+                    return f"Summary generation failed: {error_msg}"
+                return "Unable to generate meaningful summary for this document"
                 
-                document = Document(text=content)
-                index = SummaryIndex.from_documents([document])
-                query_engine = index.as_query_engine()
-                
-                summary_prompt = """Please provide an overview of the content of this file. What is the purpose of the file? What is the main message? What are the key takeaways? Please structure the response in a clear, organized manner."""
-                
-                response = query_engine.query(summary_prompt)
-                return str(response)
-            else:
-                return "File type not supported for summarization"
+            return summary
                 
         except Exception as e:
-            logger.error(f"Error summarizing file {file_id}: {e}")
-            return f"Error summarizing file: {str(e)}"
+            logger.error(f"Critical error summarizing file {file_id}: {e}")
+            return f"Critical error in summarization process: {str(e)}"
 
-    def summarize_all_files(self) -> Dict[str, List[Dict]]:
+    def summarize_all_files(self, user_id: str) -> Dict[str, List[Dict]]:
         """Summarize all files in Google Drive"""
-        files_by_type = self.list_files()
-        summaries = {doc_type: [] for doc_type in self.MIME_TYPES.keys()}
-        
-        for doc_type, files in files_by_type.items():
-            for file in files:
-                logger.info(f"Summarizing {doc_type}: {file['name']}")
-                mime_type = next((mt for dt, mt in self.MIME_TYPES.items() if dt == doc_type), None)
-                summary = self._summarize_file(file['id'], doc_type, mime_type)
-                
-                summaries[doc_type].append({
-                    'name': file['name'],
-                    'id': file['id'],
-                    'summary': summary
-                })
-        
-        return summaries
+        try:
+            # Get files with user_id
+            files_by_type = self.list_files(user_id)
+            summaries = {doc_type: [] for doc_type in self.MIME_TYPES.keys()}
+            
+            for doc_type, files in files_by_type.items():
+                for file in files:
+                    try:
+                        logger.info(f"Starting summarization of {doc_type}: {file['name']}")
+                        mime_type = next((mt for dt, mt in self.MIME_TYPES.items() if dt == doc_type), None)
+                        
+                        # Get summary with error handling
+                        try:
+                            summary = self._summarize_file(file['id'], doc_type, mime_type)
+                            logger.info(f"Successfully generated summary for {file['name']}")
+                        except Exception as e:
+                            logger.error(f"Error summarizing {file['name']}: {e}")
+                            summary = f"Error generating summary: {str(e)}"
+                        
+                        summaries[doc_type].append({
+                            'name': file['name'],
+                            'id': file['id'],
+                            'mime_type': mime_type,
+                            'summary': summary,
+                            'summary_status': 'SUCCESS' if len(summary) > 50 and not summary.startswith('Error') else 'FAILED'
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing file {file.get('name', 'unknown')}: {e}")
+                        continue
+            
+            return summaries
+            
+        except Exception as e:
+            logger.error(f"Error summarizing files: {e}")
+            return {}
+
+    def test_document_summary(self, doc_id: str) -> Dict:
+        """Test summarization of a single document"""
+        try:
+            # Get document metadata
+            file = self.drive_service.files().get(fileId=doc_id).execute()
+            mime_type = file['mimeType']
+            
+            # Determine document type
+            doc_type = next(
+                (dt for dt, mt in self.MIME_TYPES.items() if mt == mime_type),
+                'unknown'
+            )
+            
+            # Generate summary
+            summary = self._summarize_file(doc_id, doc_type, mime_type)
+            
+            return {
+                'name': file['name'],
+                'type': doc_type,
+                'mime_type': mime_type,
+                'summary': summary,
+                'success': len(summary) > 50 and not summary.startswith('Error')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error testing document summary: {e}")
+            return {
+                'error': str(e)
+            }
 
 def main():
+    """Test the DriveDocumentSummarizer"""
     try:
-        summarizer = DriveDocumentSummarizer()
+        # Test configuration
+        test_config = {
+            'test_mode': True,
+            'test_file_limit': 20,
+            'max_total_files': 30
+        }
         
-        # Get and summarize all files
-        summaries = summarizer.summarize_all_files()
+        # Initialize UserStore to get credentials
+        user_store = UserStore()
+        test_user_id = "aman"
+        
+        # Get credentials
+        credentials = user_store.get_google_credentials(test_user_id)
+        if not credentials:
+            logger.error("No valid credentials found")
+            return
+            
+        # Initialize summarizer with credentials
+        summarizer = DriveDocumentSummarizer(
+            credentials_dict=credentials.to_json(),
+            config=test_config
+        )
+        
+        # Get drive statistics
+        print("\nChecking Drive statistics...")
+        stats = summarizer.check_drive_stats(test_user_id)
+        print(f"Total files: {stats.get('total_files', 'N/A')}")
+        print(f"Storage used: {stats.get('total_size_human', 'N/A')}")
+        
+        # Get and summarize files
+        print("\nProcessing files...")
+        files = summarizer.list_files(test_user_id)
         
         # Print results
-        for doc_type, files in summaries.items():
-            print(f"\n=== {doc_type.upper()} FILES ===")
-            for file in files:
-                print(f"\nFile: {file['name']}")
-                print(f"ID: {file['id']}")
-                print("Summary:")
-                print(file['summary'])
-                print("-" * 80)
+        for doc_type, file_list in files.items():
+            print(f"\n=== {doc_type.upper()} FILES ({len(file_list)}) ===")
+            for file in file_list:
+                print(f"- {file['name']}")
         
     except Exception as e:
         logger.error(f"Error in main: {e}")
