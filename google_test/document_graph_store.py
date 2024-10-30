@@ -87,7 +87,7 @@ class DocumentGraphStore:
             total_chunks: size(chunks),
             embedding_chunk: chunks[i]
         })
-        CREATE (d)-[:HAS_EMBEDDING]->(e)
+        CREATE (d)-[:HAS_SUMMARY_EMBEDDING]->(e)
         """
         
         # Split embedding into chunks

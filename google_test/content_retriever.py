@@ -12,7 +12,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class DocumentRetriever:
+class ContentRetriever:
     def __init__(self):
         """Initialize Neo4j connection and embedding model"""
         self.uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -38,8 +38,8 @@ class DocumentRetriever:
         """Close Neo4j connection"""
         self.driver.close()
 
-    def search_documents(self, user_id: str, query: str, limit: int = 5, similarity_threshold: float = 0.3) -> List[Dict]:
-        """Search for documents using embedding similarity"""
+    def search_content(self, user_id: str, query: str, limit: int = 5, similarity_threshold: float = 0.3) -> List[Dict]:
+        """Search for documents using content embedding similarity"""
         try:
             # Generate query embedding and chunk it
             full_query_embedding = self.embed_model.get_text_embedding(query)
@@ -51,23 +51,26 @@ class DocumentRetriever:
             // Match documents owned by the user
             MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)
             
-            // Match document embeddings with matching chunk index
-            MATCH (d)-[:HAS_SUMMARY_EMBEDDING]->(e:DocumentEmbedding)
-            WHERE e.chunk_index = 0  // Compare with first chunk only
-            AND size(e.embedding_chunk) = size($query_chunk)
+            // Match document content embeddings
+            MATCH (d)-[:HAS_CONTENT_EMBEDDING]->(e:DocumentEmbedding)
+            WHERE size(e.embedding_chunk) = size($query_chunk)
             
-            // Calculate similarity for first chunk
+            // Calculate similarity for each chunk
             WITH d, e, gds.similarity.cosine(
                 e.embedding_chunk,
                 $query_chunk
-            ) AS similarity_score
+            ) AS chunk_score
+            
+            // Group by document and get max similarity score
+            WITH d, max(chunk_score) as similarity_score
             WHERE similarity_score > $threshold
             
-            // Return document details
+            // Return document details with content
             RETURN DISTINCT
                 d.origin_source_id as drive_id,
                 d.title as title,
                 d.doc_type as doc_type,
+                d.content as content,  // Include full content
                 d.summary as summary,
                 d.created_time as created_time,
                 d.modified_time as modified_time,
@@ -78,7 +81,6 @@ class DocumentRetriever:
             """
             
             with self.driver.session() as session:
-                # Use first chunk for initial search
                 result = session.run(
                     search_query,
                     user_id=user_id,
@@ -89,10 +91,15 @@ class DocumentRetriever:
                 
                 documents = []
                 for record in result:
+                    # Extract relevant text from content
+                    content = record.get('content', '')
+                    relevant_text = self._extract_relevant_text(content, query) if content else record.get('summary', '')
+                    
                     documents.append({
                         'id': record['drive_id'],
                         'title': record.get('title') or 'Untitled',
                         'doc_type': record['doc_type'],
+                        'relevant_text': relevant_text,
                         'summary': record['summary'],
                         'created_time': record['created_time'],
                         'modified_time': record['modified_time'],
@@ -111,18 +118,55 @@ class DocumentRetriever:
             logger.error(f"Error searching documents: {e}")
             return []
 
-    def get_document_recommendations(self, user_id: str, doc_id: str, limit: int = 3) -> List[Dict]:
-        """Get similar document recommendations based on a source document"""
+    def _extract_relevant_text(self, content: str, query: str, context_window: int = 500) -> str:
+        """Extract relevant text around query terms from content"""
+        try:
+            if not content:
+                return ""
+            
+            # Split content into sentences or paragraphs
+            paragraphs = content.split('\n')
+            
+            # Use OpenAI to find most relevant section
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that finds the most relevant section of text based on a query."},
+                {"role": "user", "content": f"""
+                Given this query: "{query}"
+                
+                Find the most relevant section from this text, maintaining context:
+                
+                {content[:4000]}  # Limit content length for API
+                
+                Return only the relevant section, no explanations.
+                """}
+            ]
+            
+            response = openai.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                max_tokens=500,
+                temperature=0
+            )
+            
+            relevant_text = response.choices[0].message.content.strip()
+            return relevant_text
+            
+        except Exception as e:
+            logger.error(f"Error extracting relevant text: {e}")
+            return content[:context_window] + "..."  # Fallback to first section
+
+    def get_content_recommendations(self, user_id: str, doc_id: str, limit: int = 3) -> List[Dict]:
+        """Get similar documents based on content similarity"""
         try:
             recommendation_query = """
-            // Match source document and its embeddings
+            // Match source document and its content embeddings
             MATCH (u:User {user_id: $user_id})-[:OWNS]->(source:Document {origin_source_id: $doc_id})
-            MATCH (source)-[:HAS_SUMMARY_EMBEDDING]->(source_emb:DocumentEmbedding)
+            MATCH (source)-[:HAS_CONTENT_EMBEDDING]->(source_emb:DocumentEmbedding)
             
             // Match other documents owned by the user
             MATCH (u)-[:OWNS]->(other:Document)
             WHERE other.origin_source_id <> source.origin_source_id
-            MATCH (other)-[:HAS_SUMMARY_EMBEDDING]->(other_emb:DocumentEmbedding)
+            MATCH (other)-[:HAS_CONTENT_EMBEDDING]->(other_emb:DocumentEmbedding)
             WHERE size(other_emb.embedding_chunk) = size(source_emb.embedding_chunk)
             
             // Calculate similarity between chunks
@@ -139,6 +183,7 @@ class DocumentRetriever:
                 other.title as title,
                 other.doc_type as doc_type,
                 other.summary as summary,
+                other.content as content,
                 other.web_view_link as url,
                 similarity_score
             ORDER BY similarity_score DESC
@@ -157,10 +202,10 @@ class DocumentRetriever:
                 for record in result:
                     recommendations.append({
                         'id': record['drive_id'],
-                        'neo4j_id': record['neo4j_id'],
                         'title': record['title'],
                         'doc_type': record['doc_type'],
                         'summary': record['summary'],
+                        'content': record['content'],
                         'url': record['url'],
                         'similarity_score': record['similarity_score']
                     })
@@ -172,31 +217,31 @@ class DocumentRetriever:
             return []
 
     def search_by_topic(self, user_id: str, topic: str, limit: int = 5) -> Dict[str, List[Dict]]:
-        """Search documents by topic and group by type"""
+        """Search and group documents by topic using content similarity"""
         try:
             # Generate topic embedding
             topic_embedding = self.embed_model.get_text_embedding(topic)
-            topic_size = len(topic_embedding)
             
             topic_query = """
-            // Match user's documents and their embeddings
+            // Match user's documents and their content embeddings
             MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)
-            MATCH (d)-[:HAS_EMBEDDING]->(e:DocumentEmbedding)
-            WHERE size(e.embedding_chunk) = $topic_size
+            MATCH (d)-[:HAS_CONTENT_EMBEDDING]->(e:DocumentEmbedding)
+            WHERE size(e.embedding_chunk) = size($topic_embedding)
             
             // Calculate similarity scores
             WITH d, e, gds.similarity.cosine(e.embedding_chunk, $topic_embedding) AS chunk_score
             
-            // Average scores per document
-            WITH d, avg(chunk_score) as similarity_score
+            // Group by document and get max similarity score
+            WITH d, max(chunk_score) as similarity_score
             WHERE similarity_score > 0.7
             
             // Group by document type
-            WITH COALESCE(d.doc_type, split(d.mime_type, '/')[1]) as doc_type,
+            WITH d.doc_type as doc_type,
                  collect({
-                    id: d.id,
-                    title: COALESCE(d.title, d.name, 'Untitled'),
+                    id: d.origin_source_id,
+                    title: d.title,
                     summary: d.summary,
+                    content: d.content,
                     url: d.web_view_link,
                     score: similarity_score
                  })[0..$limit] as docs
@@ -212,7 +257,6 @@ class DocumentRetriever:
                     topic_query,
                     user_id=user_id,
                     topic_embedding=topic_embedding,
-                    topic_size=topic_size,
                     limit=limit
                 )
                 
@@ -229,113 +273,105 @@ class DocumentRetriever:
             logger.error(f"Error searching by topic: {e}")
             return {}
 
-    def verify_embeddings(self, user_id: str) -> Dict:
-        """Verify embedding chunks for user's documents"""
+    def get_context_for_llm(self, user_id: str, query: str, max_docs: int = 3, max_context_length: int = 4000) -> str:
+        """Get relevant context from documents for LLM"""
         try:
-            verify_query = """
-            // Match documents and their embeddings
+            # Generate query embedding and chunk it
+            full_query_embedding = self.embed_model.get_text_embedding(query)
+            chunk_size = 500
+            query_chunks = [full_query_embedding[i:i + chunk_size] for i in range(0, len(full_query_embedding), chunk_size)]
+            
+            # Search query to get most relevant documents
+            search_query = """
+            // Match documents owned by the user
             MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)
-            OPTIONAL MATCH (d)-[:HAS_EMBEDDING]->(e:DocumentEmbedding)
             
-            // Collect statistics about embeddings
-            WITH d, collect(e) as embeddings
-            RETURN 
-                count(d) as total_docs,
-                sum(CASE WHEN size(embeddings) > 0 THEN 1 ELSE 0 END) as docs_with_embeddings,
-                sum(CASE WHEN size(embeddings) = 0 THEN 1 ELSE 0 END) as docs_without_embeddings,
-                collect({
-                    title: d.title,
-                    doc_type: d.doc_type,
-                    embedding_count: size(embeddings),
-                    chunk_sizes: [c in embeddings | size(c.embedding_chunk)]
-                }) as doc_details
-            """
+            // Match document embeddings with matching chunk index
+            MATCH (d)-[:HAS_EMBEDDING]->(e:DocumentEmbedding)
+            WHERE e.chunk_index = 0
+            AND size(e.embedding_chunk) = size($query_chunk)
             
-            with self.driver.session() as session:
-                result = session.run(verify_query, user_id=user_id).single()
-                
-                if result:
-                    print("\nEmbedding Statistics:")
-                    print(f"Total Documents: {result['total_docs']}")
-                    print(f"With Embeddings: {result['docs_with_embeddings']}")
-                    print(f"Without Embeddings: {result['docs_without_embeddings']}")
-                    
-                    
-                    print("\nDocument Details:")
-                    for doc in result['doc_details']:
-                        if doc['embedding_count'] == 0:
-                            print(f"\nWarning: No embeddings for {doc['title']} ({doc['doc_type']})")
-                        else:
-                            print(f"\nDocument: {doc['title']}")
-                            print(f"Type: {doc['doc_type']}")
-                            print(f"Embedding chunks: {doc['embedding_count']}")
-                            print(f"Chunk sizes: {doc['chunk_sizes']}")
-                    
-                    return {
-                        'total_docs': result['total_docs'],
-                        'with_embeddings': result['docs_with_embeddings'],
-                        'without_embeddings': result['docs_without_embeddings'],
-                        'details': result['doc_details']
-                    }
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error verifying embeddings: {e}")
-            return None
-
-    def debug_embeddings(self, user_id: str) -> None:
-        """Debug embeddings for a user's documents"""
-        try:
-            debug_query = """
-            // Match documents and their embeddings
-            MATCH (u:User {user_id: $user_id})-[:OWNS]->(d:Document)
-            OPTIONAL MATCH (d)-[:HAS_EMBEDDING]->(e:DocumentEmbedding)
-            WITH d, collect(e) as embeddings
+            // Calculate similarity for first chunk
+            WITH d, e, gds.similarity.cosine(
+                e.embedding_chunk,
+                $query_chunk
+            ) AS similarity_score
+            WHERE similarity_score > 0.3
             
-            // Return detailed information
-            RETURN 
+            // Return document details
+            RETURN DISTINCT
                 d.title as title,
-                d.doc_type as type,
+                d.doc_type as doc_type,
                 d.summary as summary,
-                size(embeddings) as num_embeddings,
-                [e in embeddings | size(e.embedding_chunk)] as chunk_sizes,
-                [e in embeddings | e.embedding_chunk[0..5]] as chunk_samples
+                d.web_view_link as url,
+                similarity_score
+            ORDER BY similarity_score DESC
+            LIMIT $max_docs
             """
             
             with self.driver.session() as session:
-                results = session.run(debug_query, user_id=user_id)
+                result = session.run(
+                    search_query,
+                    user_id=user_id,
+                    query_chunk=query_chunks[0],
+                    max_docs=max_docs
+                )
                 
-                print("\nEmbedding Debug Information:")
-                for record in results:
-                    print(f"\nDocument: {record['title']}")
-                    print(f"Type: {record['type']}")
-                    print(f"Number of embeddings: {record['num_embeddings']}")
-                    print(f"Chunk sizes: {record['chunk_sizes']}")
-                    print(f"First 5 values of each chunk: {record['chunk_samples']}")
-                    print("-" * 80)
+                # Build context string
+                context_parts = []
+                total_length = 0
+                
+                for record in result:
+                    # Format document information
+                    doc_context = f"\nDocument: {record['title']}\n"
+                    doc_context += f"Type: {record['doc_type']}\n"
+                    
+                    # Add summary
+                    if record['summary']:
+                        remaining_length = max_context_length - total_length - len(doc_context)
+                        if remaining_length > 100:
+                            truncated_summary = record['summary'][:remaining_length]
+                            doc_context += f"Summary: {truncated_summary}\n"
+                    
+                    # Add source URL
+                    if record['url']:
+                        doc_context += f"Source: {record['url']}\n"
+                    
+                    # Add separator
+                    doc_context += "-" * 80 + "\n"
+                    
+                    # Check if adding this document would exceed max length
+                    if total_length + len(doc_context) <= max_context_length:
+                        context_parts.append(doc_context)
+                        total_length += len(doc_context)
+                    else:
+                        break
+                
+                if not context_parts:
+                    return "No relevant context found."
+                
+                # Combine all context parts
+                full_context = "Here is the relevant context from the documents:\n\n"
+                full_context += "".join(context_parts)
+                
+                return full_context
                 
         except Exception as e:
-            logger.error(f"Error debugging embeddings: {e}")
+            logger.error(f"Error getting context: {e}")
+            return f"Error retrieving context: {str(e)}"
 
 def main():
-    """Test document retrieval functionality"""
+    """Test content retrieval functionality"""
     try:
-        retriever = DocumentRetriever()
+        retriever = ContentRetriever()
         test_user_id = "dev"
-        
-        # Debug embeddings
-        print("\nDebugging embeddings...")
-        retriever.debug_embeddings(test_user_id)
         
         # Test semantic search with different queries
         queries = [
-           
             {
-                'text': "Leaflogic",
-                'threshold': 0.9
-                
-            },
-            
+                'text': "Leaflogic platform features and capabilities",
+                'threshold': 0.3
+            }
         ]
         
         for query_info in queries:
@@ -343,10 +379,10 @@ def main():
             threshold = query_info['threshold']
             
             print(f"\nSearching for: '{query}' (threshold: {threshold})")
-            results = retriever.search_documents(
+            results = retriever.search_content(
                 test_user_id, 
                 query, 
-                limit=5,
+                limit=3,
                 similarity_threshold=threshold
             )
             
@@ -354,10 +390,10 @@ def main():
                 print(f"\nFound {len(results)} matching documents:")
                 for i, doc in enumerate(results, 1):
                     print(f"\n{i}. {doc['title']}")
-                    print(f"ID: {doc['id']}")
                     print(f"Type: {doc['doc_type']}")
                     print(f"Score: {doc['similarity_score']:.3f}")
-                    print(f"Summary excerpt: {doc['summary'][:200]}...")
+                    print("\nRelevant Text:")
+                    print(doc['relevant_text'])
                     print("-" * 80)
             else:
                 print("No matching documents found")
