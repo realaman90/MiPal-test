@@ -37,7 +37,8 @@ class UserStore:
         MERGE (u:User {user_id: $user_id})
         SET 
             u.email = $email,
-            u.name = $name,
+            u.first_name = $first_name,
+            u.last_name = $last_name,
             u.role = $role,
             u.department = $department,
             u.integrations = $integrations,
@@ -82,7 +83,8 @@ class UserStore:
             query,
             user_id=user_data['user_id'],
             email=user_data.get('email'),
-            name=user_data.get('name'),
+            first_name=user_data.get('first_name'),
+            last_name=user_data.get('last_name'),
             role=user_data.get('role'),
             department=user_data.get('department'),
             integrations=integrations_str,
@@ -108,7 +110,8 @@ class UserStore:
                     return {
                         'user_id': user_node['user_id'],
                         'email': user_node['email'],
-                        'name': user_node['name'],
+                        'first_name': user_node['first_name'],
+                        'last_name': user_node['last_name'],
                         'role': relationship['role'],
                         'department': relationship['department'],
                         'company': {
@@ -154,7 +157,14 @@ class UserStore:
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/documents.readonly",
-                "https://www.googleapis.com/auth/spreadsheets.readonly"
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.labels",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.compose",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/calendar.settings.readonly"
             ]
         }
         
@@ -175,13 +185,21 @@ class UserStore:
                 "https://www.googleapis.com/auth/drive.metadata.readonly",
                 "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/documents.readonly",
-                "https://www.googleapis.com/auth/spreadsheets.readonly"
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.labels",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.compose",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/calendar.settings.readonly"
             ]
-            
+            # Yeh walla front se call hoga
             flow = InstalledAppFlow.from_client_secrets_file(
                 client_secrets_file, SCOPES)
             credentials = flow.run_local_server(port=0)
             
+            # Yeh walla Kms pe store hoga and then hash hoke db me store hoga
             credentials_dict = {
                 'token': credentials.token,
                 'refresh_token': credentials.refresh_token,
@@ -264,6 +282,7 @@ class UserStore:
             logger.error(f"Error getting Google credentials: {e}")
             return None
 
+#This will chnage it checks and updates the integration status
     def update_integration_status(self, user_id: str, provider: str, status_data: Dict) -> Optional[Dict]:
         """Update integration status for a user"""
         try:
@@ -371,10 +390,10 @@ def main():
         user_store = UserStore()
         
         test_user = {
-            'user_id': 'dev',
-            'email': 'dev@fastlane.com',
-            'first_name': 'Dev',
-            'last_name': 'Kumar',
+            'user_id': 'aman123',
+            'email': 'aman@fastlane.com',
+            'first_name': 'Aman',
+            'last_name': 'Rawat',
             'company': {
                 'name': 'Fastlane',
                 'industry': 'Technology',
@@ -395,13 +414,13 @@ def main():
             raise FileNotFoundError(f"credentials.json not found at {client_secrets_file}")
             
         integration_result = user_store.setup_google_integration(
-            'dev',  # Use same user_id as created user
+            'aman123',  # Use same user_id as created user
             client_secrets_file
         )
         print(f"Integration result: {json.dumps(integration_result, indent=2)}")
         
         print("\nTesting credentials retrieval...")
-        credentials = user_store.get_google_credentials('dev')  # Use same user_id
+        credentials = user_store.get_google_credentials('aman123')  # Use same user_id
         if credentials:
             print("Successfully retrieved and validated credentials")
             drive_service = build('drive', 'v3', credentials=credentials)
