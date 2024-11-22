@@ -37,8 +37,18 @@ class DocumentRetriever:
     def close(self):
         """Close Neo4j connection"""
         self.driver.close()
+        
+        
+    def embed_query(self, query: str) -> List[float]:
+        """Generate an embedding for the user's query."""
+        response = openai.Embedding.create(
+            input=query,
+            model='text-embedding-ada-002'
+        )
+        embedding = response['data'][0]['embedding']
+        return embedding    
 
-    def search_documents(self, user_id: str, query: str, limit: int = 5, similarity_threshold: float = 0.3) -> List[Dict]:
+    def find_similar_documents(self, user_id: str, query: str, top_k: int = 5, similarity_threshold: float = 0.7) -> List[Dict]:
         """Search for documents using embedding similarity"""
         try:
             # Generate query embedding and chunk it
@@ -74,7 +84,7 @@ class DocumentRetriever:
                 d.web_view_link as url,
                 similarity_score
             ORDER BY similarity_score DESC
-            LIMIT $limit
+            LIMIT $top_k
             """
             
             with self.driver.session() as session:
@@ -84,7 +94,7 @@ class DocumentRetriever:
                     user_id=user_id,
                     query_chunk=query_chunks[0],  # Use first chunk
                     threshold=similarity_threshold,
-                    limit=limit
+                    limit=top_k
                 )
                 
                 documents = []
@@ -317,57 +327,57 @@ class DocumentRetriever:
         except Exception as e:
             logger.error(f"Error debugging embeddings: {e}")
 
-def main():
-    """Test document retrieval functionality"""
-    try:
-        retriever = DocumentRetriever()
-        test_user_id = "dev"
+# def main():
+#     """Test document retrieval functionality"""
+#     try:
+#         retriever = DocumentRetriever()
+#         test_user_id = "dev"
         
-        # Debug embeddings
-        print("\nDebugging embeddings...")
-        retriever.debug_embeddings(test_user_id)
+#         # Debug embeddings
+#         print("\nDebugging embeddings...")
+#         retriever.debug_embeddings(test_user_id)
         
-        # Test semantic search with different queries
-        queries = [
+#         # Test semantic search with different queries
+#         queries = [
            
-            {
-                'text': "Leaflogic",
-                'threshold': 0.9
+#             {
+#                 'text': "Leaflogic",
+#                 'threshold': 0.9
                 
-            },
+#             },
             
-        ]
+#         ]
         
-        for query_info in queries:
-            query = query_info['text']
-            threshold = query_info['threshold']
+#         for query_info in queries:
+#             query = query_info['text']
+#             threshold = query_info['threshold']
             
-            print(f"\nSearching for: '{query}' (threshold: {threshold})")
-            results = retriever.search_documents(
-                test_user_id, 
-                query, 
-                limit=5,
-                similarity_threshold=threshold
-            )
+#             print(f"\nSearching for: '{query}' (threshold: {threshold})")
+#             results = retriever.search_documents(
+#                 test_user_id, 
+#                 query, 
+#                 limit=5,
+#                 similarity_threshold=threshold
+#             )
             
-            if results:
-                print(f"\nFound {len(results)} matching documents:")
-                for i, doc in enumerate(results, 1):
-                    print(f"\n{i}. {doc['title']}")
-                    print(f"ID: {doc['id']}")
-                    print(f"Type: {doc['doc_type']}")
-                    print(f"Score: {doc['similarity_score']:.3f}")
-                    print(f"Summary excerpt: {doc['summary'][:200]}...")
-                    print("-" * 80)
-            else:
-                print("No matching documents found")
+#             if results:
+#                 print(f"\nFound {len(results)} matching documents:")
+#                 for i, doc in enumerate(results, 1):
+#                     print(f"\n{i}. {doc['title']}")
+#                     print(f"ID: {doc['id']}")
+#                     print(f"Type: {doc['doc_type']}")
+#                     print(f"Score: {doc['similarity_score']:.3f}")
+#                     print(f"Summary excerpt: {doc['summary'][:200]}...")
+#                     print("-" * 80)
+#             else:
+#                 print("No matching documents found")
         
-    except Exception as e:
-        logger.error(f"Error in main: {e}")
-        raise
+#     except Exception as e:
+#         logger.error(f"Error in main: {e}")
+#         raise
     
-    finally:
-        retriever.close()
+#     finally:
+#         retriever.close()
 
-if __name__ == "__main__":
-    main() 
+# if __name__ == "__main__":
+#     main() 
